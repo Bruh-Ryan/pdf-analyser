@@ -9,6 +9,16 @@
     <div class="card-body">
         <p class="text-muted">Source: {{ company['source_location'] }} | Extracted: {{ company['extracted_at'] }}</p>
         <hr>
+
+        {% if company['summary'] %}
+        <div class="mb-4">
+            <h5>AI Summary ✨</h5>
+            <div class="p-3 bg-light border border-info rounded">
+                {{ company['summary'] }}
+            </div>
+        </div>
+        {% endif %}
+
         <h5>Extracted Text</h5>
         <div class="p-3 bg-light border rounded" style="white-space: pre-wrap; max-height: 600px; overflow-y: auto;">
             {{ company['raw_text'] }}
