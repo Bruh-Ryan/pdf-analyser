@@ -4,6 +4,8 @@ import sqlite3
 import requests
 import pdfplumber
 import google.generativeai as genai
+import pytesseract
+from PIL import Image
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
@@ -98,35 +100,37 @@ def summarize_text(text):
         print(f"Summarization failed: {e}")
         return None
 
-def extract_text_via_vision(pdf):
-    # Fallback for Scanned PDFs
-    # We will convert pages to images and ask Gemini to transcribe
-    if not model:
-        return None, "Gemini API Key missing. Cannot perform OCR."
-    
+def extract_text_via_ocr(pdf):
+    """
+    Fallback for Scanned PDFs using Tesseract OCR
+    More reliable than API-based solutions for traditional OCR
+    """
     full_text = ""
     try:
-        print("Scanned PDF detected. Attempting OCR with Gemini...")
+        print("Scanned PDF detected. Attempting OCR with Tesseract...")
         for i, page in enumerate(pdf.pages):
-            # Limit to first 5 pages for demo performance
-            if i >= 5:
+            # Limit to first 10 pages for demo performance
+            if i >= 10:
                 break
                 
             # Convert page to image (Pillow Image)
-            # resolution=150 is decent for OCR speed/quality balance
-            img_obj = page.to_image(resolution=150)
+            # resolution=300 is good for OCR accuracy
+            img_obj = page.to_image(resolution=300)
             img = img_obj.original
             
-            # Send to Gemini
-            prompt = "Transcribe the text from this document page exactly. Output ONLY the transcribed text."
-            response = model.generate_content([prompt, img])
+            # Use pytesseract to extract text
+            page_text = pytesseract.image_to_string(img)
             
-            if response.text:
-                full_text += response.text + "\n"
+            if page_text.strip():
+                full_text += page_text + "\n"
         
-        return full_text, None
+        if full_text.strip():
+            return full_text, None
+        else:
+            return None, "No text could be extracted from the scanned PDF"
+            
     except Exception as e:
-        print(f"Vision OCR failed: {e}")
+        print(f"Tesseract OCR failed: {e}")
         return None, f"OCR Failed: {e}"
 
 def perform_deep_analysis(pdf_path):
@@ -181,8 +185,8 @@ def extract_text_from_pdf(pdf_path):
             
             # 2. Check if text is sufficient (OCR fallback)
             if not text.strip() or len(text.strip()) < 50:
-                print("Text too sparse, attempting Vision OCR...")
-                ocr_text, ocr_error = extract_text_via_vision(pdf)
+                print("Text too sparse, attempting Tesseract OCR...")
+                ocr_text, ocr_error = extract_text_via_ocr(pdf)
                 if ocr_text:
                     text = ocr_text
                 elif not text.strip(): # Only return error if we still have no text
