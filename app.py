@@ -2,14 +2,13 @@ import os
 import secrets
 import sqlite3
 import requests
-import pdfplumber
+import fitz  # PyMuPDF
 import google.generativeai as genai
-import pytesseract
-from PIL import Image
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 from io import BytesIO
+import base64
 
 app = Flask(__name__)
 # Generate a secret key if not set (fine for demo reset on deploy)
@@ -30,8 +29,7 @@ if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         # Use flash model for speed and cost
-        # Use the stable model name (without 'models/' prefix for the SDK)
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
     except Exception as e:
         print(f"Error configuring Gemini: {e}")
         model = None
@@ -100,29 +98,57 @@ def summarize_text(text):
         print(f"Summarization failed: {e}")
         return None
 
-def extract_text_via_ocr(pdf):
+def extract_text_via_ocr(pdf_path):
     """
-    Fallback for Scanned PDFs using Tesseract OCR
-    More reliable than API-based solutions for traditional OCR
+    Fallback for Scanned PDFs using OCR.space Cloud API
+    Free tier: 25,000 requests/month, no system dependencies needed
     """
     full_text = ""
     try:
-        print("Scanned PDF detected. Attempting OCR with Tesseract...")
-        for i, page in enumerate(pdf.pages):
-            # Limit to first 10 pages for demo performance
-            if i >= 10:
-                break
-                
-            # Convert page to image (Pillow Image)
-            # resolution=300 is good for OCR accuracy
-            img_obj = page.to_image(resolution=300)
-            img = img_obj.original
+        print("Scanned PDF detected. Attempting OCR with OCR.space API...")
+        
+        # OCR.space API endpoint
+        url = "https://api.ocr.space/parse/image"
+        
+        # Open PDF and convert pages to images
+        doc = fitz.open(pdf_path)
+        
+        # Process first 5 pages for demo (free tier has limits)
+        for page_num in range(min(5, len(doc))):
+            page = doc[page_num]
             
-            # Use pytesseract to extract text
-            page_text = pytesseract.image_to_string(img)
+            # Render page to image (PNG format, 300 DPI for good OCR)
+            pix = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
+            img_bytes = pix.tobytes("png")
             
-            if page_text.strip():
-                full_text += page_text + "\n"
+            # Encode image to base64 for API
+            img_base64 = base64.b64encode(img_bytes).decode()
+            
+            # Call OCR.space API
+            payload = {
+                'base64Image': f"data:image/png;base64,{img_base64}",
+                'language': 'eng',
+                'isOverlayRequired': False,
+                'detectOrientation': True,
+                'scale': True,
+                'OCREngine': 2,  # Engine 2 is more accurate
+            }
+            
+            response = requests.post(url, data=payload, timeout=30)
+            result = response.json()
+            
+            # Extract text from response
+            if result.get('ParsedResults'):
+                page_text = result['ParsedResults'][0].get('ParsedText', '')
+                if page_text.strip():
+                    full_text += page_text + "\n"
+            
+            # Check for API errors
+            if result.get('IsErroredOnProcessing'):
+                error_msg = result.get('ErrorMessage', ['Unknown error'])[0]
+                print(f"OCR.space error on page {page_num + 1}: {error_msg}")
+        
+        doc.close()
         
         if full_text.strip():
             return full_text, None
@@ -130,72 +156,83 @@ def extract_text_via_ocr(pdf):
             return None, "No text could be extracted from the scanned PDF"
             
     except Exception as e:
-        print(f"Tesseract OCR failed: {e}")
+        print(f"OCR.space API failed: {e}")
         return None, f"OCR Failed: {e}"
 
 def perform_deep_analysis(pdf_path):
-    """Perform deep visual analysis of PDF for graphs, tables, charts"""
+    """
+    Perform deep analysis of PDF content using Gemini
+    Note: Disabled visual analysis due to API compatibility issues
+    """
     if not model:
         return None
     
     try:
-        with pdfplumber.open(pdf_path) as pdf:
-            if not pdf.pages:
-                return None
-            
-            analysis_parts = []
-            
-            # Analyze first 3 pages for graphs/tables/charts
-            for i, page in enumerate(pdf.pages[:3]):
-                img_obj = page.to_image(resolution=150)
-                img = img_obj.original
-                
-                prompt = """
-Analyze this document page and provide:
-1. Identify any graphs, charts, tables, or visual data
-2. Explain what each graph/chart/table shows
-3. Highlight key insights or trends
-4. Answer: What questions does this data answer?
+        # Extract text first
+        text, error = extract_text_from_pdf(pdf_path)
+        if not text:
+            return None
+        
+        # Use Gemini for text-based deep analysis only
+        prompt = f"""
+Analyze this document and provide:
+1. Key topics and themes
+2. Important data points, numbers, or statistics mentioned
+3. Main insights or conclusions
+4. What questions does this document answer?
+
+Document content:
+{text[:10000]}
 
 Be specific and concise.
 """
-                response = model.generate_content([prompt, img])
-                
-                if response.text:
-                    analysis_parts.append(f"### Page {i+1}\n{response.text}")
-            
-            return "\n\n".join(analysis_parts) if analysis_parts else None
+        response = model.generate_content(prompt)
+        
+        if response.text:
+            return response.text
+        else:
+            return None
             
     except Exception as e:
         print(f"Deep analysis failed: {e}")
         return None
 
 def extract_text_from_pdf(pdf_path):
+    """
+    Extract text from PDF using PyMuPDF (fitz)
+    Falls back to OCR.space API for scanned PDFs
+    """
     text = ""
     try:
-        with pdfplumber.open(pdf_path) as pdf:
-            if not pdf.pages:
-                return None, "Empty PDF file"
-            
-            # 1. Try Standard Extraction
-            for page in pdf.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    text += extracted + "\n"
-            
-            # 2. Check if text is sufficient (OCR fallback)
-            if not text.strip() or len(text.strip()) < 50:
-                print("Text too sparse, attempting Tesseract OCR...")
-                ocr_text, ocr_error = extract_text_via_ocr(pdf)
-                if ocr_text:
-                    text = ocr_text
-                elif not text.strip(): # Only return error if we still have no text
-                    error_msg = f"Scanned PDF detected. OCR failed: {ocr_error}" if ocr_error else "Scanned PDF detected. OCR yielded no text."
-                    return None, error_msg
+        # Open PDF with PyMuPDF
+        doc = fitz.open(pdf_path)
+        
+        if len(doc) == 0:
+            return None, "Empty PDF file"
+        
+        # 1. Try Standard Text Extraction with PyMuPDF
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            page_text = page.get_text()
+            if page_text:
+                text += page_text + "\n"
+        
+        doc.close()
+        
+        # 2. Check if text is sufficient (OCR fallback for scanned PDFs)
+        if not text.strip() or len(text.strip()) < 100:
+            print("Text too sparse, attempting OCR.space API...")
+            ocr_text, ocr_error = extract_text_via_ocr(pdf_path)
+            if ocr_text:
+                text = ocr_text
+            elif not text.strip():  # Only return error if we still have no text
+                error_msg = f"Scanned PDF detected. OCR failed: {ocr_error}" if ocr_error else "Scanned PDF detected. OCR yielded no text."
+                return None, error_msg
 
     except Exception as e:
         print(f"Error extracting PDF: {e}")
         return None, str(e)
+    
     return text, None
 
 def extract_text_from_url(url):
