@@ -3,10 +3,11 @@ import secrets
 import sqlite3
 import requests
 import pdfplumber
+import google.generativeai as genai
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
-from huggingface_hub import InferenceClient
+from io import BytesIO
 
 app = Flask(__name__)
 # Generate a secret key if not set (fine for demo reset on deploy)
@@ -19,15 +20,21 @@ app.config['UPLOAD_FOLDER'] = os.path.join(TEMP_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload setup
 app.config['DB_PATH'] = os.path.join(TEMP_DIR, 'demo.db')
 
-# Hugging Face Setup
-# Use a lightweight model for speed
-HF_MODEL = "sshleifer/distilbart-cnn-12-6"
-hf_token = os.environ.get('HF_TOKEN')
-try:
-    hf_client = InferenceClient(model=HF_MODEL, token=hf_token)
-except Exception as e:
-    print(f"Warning: Could not initialize HF Client: {e}")
-    hf_client = None
+# Gemini Setup
+# User provided key - prioritizing env var but falling back to hardcoded for demo
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AlzaSyA7VUHQA0mNbIXG10qEM9WGuf3k0LJVEDl')
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        # Use flash model for speed and cost
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    except Exception as e:
+        print(f"Error configuring Gemini: {e}")
+        model = None
+else:
+    model = None
+    print("Warning: GEMINI_API_KEY not found. AI features will be disabled.")
 
 # Ensure upload directory exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -49,6 +56,11 @@ def init_db():
             extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    try:
+        c.execute('ALTER TABLE companies ADD COLUMN summary TEXT')
+    except sqlite3.OperationalError:
+        # Column likely already exists
+        pass
     conn.commit()
     conn.close()
 
@@ -65,37 +77,80 @@ def allowed_file(filename):
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def summarize_text(text):
-    if not text or not hf_client:
+    if not text or not model:
         return None
     
     try:
-        # Truncate text to avoid token limits (rough approx 1024 tokens)
-        # Taking first 3000 chars is usually safe for distilbart
-        input_text = text[:3000]
-        
-        summary = hf_client.summarization(input_text)
-        # API returns a list of specific object or dict, usually [{'summary_text': '...'}]
-        if summary and isinstance(summary, list) and 'summary_text' in summary[0]:
-             return summary[0]['summary_text']
-        elif summary and hasattr(summary, 'summary_text'):
-             return summary.summary_text
-        return None
+        # Gemini handles large context well, but safe limit is good practice
+        # Verify text is not too short
+        if len(text) < 50:
+            return "Text too short to summarize."
+
+        prompt = f"Please provide a concise summary of the following company information:\n\n{text[:30000]}"
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
         print(f"Summarization failed: {e}")
         return None
+
+def extract_text_via_vision(pdf):
+    # Fallback for Scanned PDFs
+    # We will convert pages to images and ask Gemini to transcribe
+    if not model:
+        return None, "Gemini API Key missing. Cannot perform OCR."
+    
+    full_text = ""
+    try:
+        print("Scanned PDF detected. Attempting OCR with Gemini...")
+        for i, page in enumerate(pdf.pages):
+            # Limit to first 5 pages for demo performance
+            if i >= 5:
+                break
+                
+            # Convert page to image (Pillow Image)
+            # resolution=150 is decent for OCR speed/quality balance
+            img_obj = page.to_image(resolution=150)
+            img = img_obj.original
+            
+            # Send to Gemini
+            prompt = "Transcribe the text from this document page exactly. Output ONLY the transcribed text."
+            response = model.generate_content([prompt, img])
+            
+            if response.text:
+                full_text += response.text + "\n"
+        
+        return full_text, None
+    except Exception as e:
+        print(f"Vision OCR failed: {e}")
+        return None, f"OCR Failed: {e}"
 
 def extract_text_from_pdf(pdf_path):
     text = ""
     try:
         with pdfplumber.open(pdf_path) as pdf:
+            if not pdf.pages:
+                return None, "Empty PDF file"
+            
+            # 1. Try Standard Extraction
             for page in pdf.pages:
                 extracted = page.extract_text()
                 if extracted:
                     text += extracted + "\n"
+            
+            # 2. Check if text is sufficient (OCR fallback)
+            if not text.strip() or len(text.strip()) < 50:
+                print("Text too sparse, attempting Vision OCR...")
+                ocr_text, ocr_error = extract_text_via_vision(pdf)
+                if ocr_text:
+                    text = ocr_text
+                elif not text.strip(): # Only return error if we still have no text
+                    error_msg = f"Scanned PDF detected. OCR failed: {ocr_error}" if ocr_error else "Scanned PDF detected. OCR yielded no text."
+                    return None, error_msg
+
     except Exception as e:
         print(f"Error extracting PDF: {e}")
-        return None
-    return text
+        return None, str(e)
+    return text, None
 
 def extract_text_from_url(url):
     try:
@@ -145,7 +200,8 @@ def index():
                 file.save(filepath)
                 
                 # Extract text
-                text = extract_text_from_pdf(filepath)
+                text, error = extract_text_from_pdf(filepath)
+                
                 if text:
                     # Use custom name if provided, else filename
                     company_name = custom_name if custom_name else filename
@@ -157,11 +213,12 @@ def index():
                     save_company(company_name, 'PDF', filename, text, summary)
                     msg = f'Successfully processed {company_name}'
                     if not summary:
-                        msg += ' (Summary unavailable)'
+                        msg += ' (AI Summary unavailable - check API key)'
                     flash(msg, 'success')
                     return redirect(url_for('companies'))
                 else:
-                    flash('Could not extract text from PDF', 'error')
+                    msg = f"Failed to process PDF: {error}" if error else "Could not extract text"
+                    flash(msg, 'error')
                     return redirect(request.url)
         
         # Check for URL submission
