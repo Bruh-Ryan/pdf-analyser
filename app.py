@@ -135,7 +135,24 @@ def extract_text_via_ocr(pdf_path):
             }
             
             response = requests.post(url, data=payload, timeout=30)
-            result = response.json()
+            
+            # Check if request was successful
+            if response.status_code != 200:
+                print(f"OCR.space API returned status {response.status_code}: {response.text}")
+                continue
+            
+            # Parse JSON response
+            try:
+                result = response.json()
+            except Exception as json_error:
+                print(f"Failed to parse OCR.space response as JSON: {json_error}")
+                print(f"Response text: {response.text[:200]}")
+                continue
+            
+            # Check if result is a dictionary
+            if not isinstance(result, dict):
+                print(f"OCR.space returned non-dict response: {type(result)}")
+                continue
             
             # Extract text from response
             if result.get('ParsedResults'):
@@ -145,7 +162,9 @@ def extract_text_via_ocr(pdf_path):
             
             # Check for API errors
             if result.get('IsErroredOnProcessing'):
-                error_msg = result.get('ErrorMessage', ['Unknown error'])[0]
+                error_msg = result.get('ErrorMessage', ['Unknown error'])
+                if isinstance(error_msg, list) and len(error_msg) > 0:
+                    error_msg = error_msg[0]
                 print(f"OCR.space error on page {page_num + 1}: {error_msg}")
         
         doc.close()
@@ -157,6 +176,8 @@ def extract_text_via_ocr(pdf_path):
             
     except Exception as e:
         print(f"OCR.space API failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None, f"OCR Failed: {e}"
 
 def perform_deep_analysis(pdf_path):
