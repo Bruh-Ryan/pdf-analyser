@@ -28,7 +28,8 @@ if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         # Use flash model for speed and cost
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Use the stable model name (without 'models/' prefix for the SDK)
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
     except Exception as e:
         print(f"Error configuring Gemini: {e}")
         model = None
