@@ -22,7 +22,7 @@ app.config['DB_PATH'] = os.path.join(TEMP_DIR, 'demo.db')
 
 # Gemini Setup
 # User provided key - prioritizing env var but falling back to hardcoded for demo
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AlzaSyA7VUHQA0mNbIXG10qEM9WGuf3k0LJVEDl')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyA7VUHQA0mNblXG10qEM9WGuf3k0LJVEdI')
 
 if GEMINI_API_KEY:
     try:
@@ -53,13 +53,17 @@ def init_db():
             source_location TEXT NOT NULL,
             raw_text TEXT,
             summary TEXT,
+            deep_analysis TEXT,
             extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     try:
         c.execute('ALTER TABLE companies ADD COLUMN summary TEXT')
     except sqlite3.OperationalError:
-        # Column likely already exists
+        pass
+    try:
+        c.execute('ALTER TABLE companies ADD COLUMN deep_analysis TEXT')
+    except sqlite3.OperationalError:
         pass
     conn.commit()
     conn.close()
@@ -123,6 +127,43 @@ def extract_text_via_vision(pdf):
     except Exception as e:
         print(f"Vision OCR failed: {e}")
         return None, f"OCR Failed: {e}"
+
+def perform_deep_analysis(pdf_path):
+    """Perform deep visual analysis of PDF for graphs, tables, charts"""
+    if not model:
+        return None
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            if not pdf.pages:
+                return None
+            
+            analysis_parts = []
+            
+            # Analyze first 3 pages for graphs/tables/charts
+            for i, page in enumerate(pdf.pages[:3]):
+                img_obj = page.to_image(resolution=150)
+                img = img_obj.original
+                
+                prompt = """
+Analyze this document page and provide:
+1. Identify any graphs, charts, tables, or visual data
+2. Explain what each graph/chart/table shows
+3. Highlight key insights or trends
+4. Answer: What questions does this data answer?
+
+Be specific and concise.
+"""
+                response = model.generate_content([prompt, img])
+                
+                if response.text:
+                    analysis_parts.append(f"### Page {i+1}\n{response.text}")
+            
+            return "\n\n".join(analysis_parts) if analysis_parts else None
+            
+    except Exception as e:
+        print(f"Deep analysis failed: {e}")
+        return None
 
 def extract_text_from_pdf(pdf_path):
     text = ""
@@ -269,6 +310,43 @@ def company_detail(id):
     if company is None:
         return "Company not found", 404
     return render_template('detail.html', company=company)
+
+@app.route('/analyze/<int:id>', methods=['POST'])
+def deep_analyze(id):
+    conn = get_db_connection()
+    company = conn.execute('SELECT * FROM companies WHERE id = ?', (id,)).fetchone()
+    
+    if company is None:
+        flash('Company not found', 'error')
+        return redirect(url_for('companies'))
+    
+    # If already has deep analysis, return it
+    if company['deep_analysis']:
+        flash('Analysis already exists!', 'info')
+        return redirect(url_for('company_detail', id=id))
+    
+    # Perform deep analysis for PDFs only
+    if company['source_type'] == 'PDF':
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], company['source_location'])
+        
+        if os.path.exists(filepath):
+            analysis = perform_deep_analysis(filepath)
+            
+            if analysis:
+                # Update the record with deep analysis
+                conn = get_db_connection()
+                conn.execute('UPDATE companies SET deep_analysis = ? WHERE id = ?', (analysis, id))
+                conn.commit()
+                conn.close()
+                flash('Deep analysis complete!', 'success')
+            else:
+                flash('Deep analysis failed. Please try again later.', 'error')
+        else:
+            flash('PDF file not found. File may have been deleted.', 'error')
+    else:
+        flash('Deep analysis is only available for PDFs', 'warning')
+    
+    return redirect(url_for('company_detail', id=id))
 
 # Required for Vercel
 app = app
