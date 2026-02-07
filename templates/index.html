@@ -1,0 +1,118 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="card shadow">
+    <div class="card-header bg-primary text-white">
+        <h3 class="mb-0">Upload Company Data</h3>
+    </div>
+    <div class="card-body">
+        <!-- PDF Form -->
+        <form method="post" enctype="multipart/form-data" class="mb-4" id="pdfForm">
+            <h5 class="card-title">Option 1: Upload PDF</h5>
+            <div class="mb-3">
+                <label for="file" class="form-label">Select PDF File</label>
+                <input class="form-control" type="file" id="file" name="file" accept=".pdf" required>
+            </div>
+            <input type="hidden" name="custom_name" id="pdf_custom_name">
+            <button type="button" class="btn btn-primary" onclick="handlePdfSubmit()">Upload PDF</button>
+        </form>
+
+        <hr class="my-4">
+
+        <!-- URL Form -->
+        <form method="post" id="urlForm">
+            <h5 class="card-title">Option 2: Enter URL</h5>
+            <div class="mb-3">
+                <label for="url" class="form-label">Company Website URL</label>
+                <input type="url" class="form-control" id="url" name="url" placeholder="https://example.com" required>
+            </div>
+            <input type="hidden" name="custom_name" id="url_custom_name">
+            <button type="button" class="btn btn-success" onclick="handleUrlSubmit()">Process URL</button>
+        </form>
+    </div>
+</div>
+
+<!-- Naming Modal -->
+<div class="modal fade" id="namingModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Name this Entry</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>How would you like to save this file?</p>
+                <div class="mb-3">
+                    <label for="modalNameInput" class="form-label">Company/File Name</label>
+                    <input type="text" class="form-control" id="modalNameInput">
+                    <div class="form-text">Defaults to the detected filename or domain.</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="confirmSubmission()">Save & Process</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let activeForm = null;
+    let activeNameInput = null;
+
+    function handlePdfSubmit() {
+        const fileInput = document.getElementById('file');
+        if (!fileInput.files.length) {
+            alert("Please select a file first.");
+            return;
+        }
+
+        const filename = fileInput.files[0].name;
+        // Strip extension for cleaner default name
+        const defaultName = filename.replace(/\.pdf$/i, '');
+
+        showModal(document.getElementById('pdfForm'), document.getElementById('pdf_custom_name'), defaultName);
+    }
+
+    function handleUrlSubmit() {
+        const urlInput = document.getElementById('url');
+        if (!urlInput.value) {
+            alert("Please enter a URL.");
+            return;
+        }
+
+        let url = urlInput.value;
+        // Extract domain without https/www
+        let domain = url.replace(/^(https?:\/\/)?(www\.)?/, '');
+        // Remove trailing path if just root, or keep it if specific page? User said "just the name"
+        // Let's take the first part before any slash
+        domain = domain.split('/')[0];
+
+        showModal(document.getElementById('urlForm'), document.getElementById('url_custom_name'), domain);
+    }
+
+    function showModal(form, hiddenInput, defaultName) {
+        activeForm = form;
+        activeNameInput = hiddenInput;
+
+        const modalInput = document.getElementById('modalNameInput');
+        modalInput.value = defaultName;
+
+        const modal = new bootstrap.Modal(document.getElementById('namingModal'));
+        modal.show();
+    }
+
+    function confirmSubmission() {
+        const modalInput = document.getElementById('modalNameInput');
+        if (activeNameInput) {
+            activeNameInput.value = modalInput.value;
+        }
+        if (activeForm) {
+            activeForm.submit();
+        }
+        // Hide modal
+        const modalInstance = bootstrap.Modal.getInstance(document.getElementById('namingModal'));
+        modalInstance.hide();
+    }
+</script>
+{% endblock %}

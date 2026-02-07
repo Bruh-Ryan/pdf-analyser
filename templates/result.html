@@ -1,0 +1,22 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="card shadow">
+    <div class="card-header bg-success text-white">
+        <h3 class="mb-0">Extraction Result</h3>
+    </div>
+    <div class="card-body">
+        <h5>Source: {{ source }} ({{ type }})</h5>
+        <hr>
+        <h6>Extracted Text:</h6>
+        <div class="p-3 bg-light border rounded" style="white-space: pre-wrap; max-height: 500px; overflow-y: auto;">
+            {{ text }}
+        </div>
+        <div class="mt-3">
+            <a href="{{ url_for('index') }}" class="btn btn-primary">Process Another</a>
+            <!-- Placeholder for save to DB -->
+            <button class="btn btn-secondary" disabled>Save to Database (Step 3)</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

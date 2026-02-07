@@ -1,0 +1,60 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<h2>Uploaded Companies</h2>
+
+<form class="mb-4" action="{{ url_for('companies') }}">
+    <div class="input-group">
+        <input type="text" class="form-control" placeholder="Search companies or text..." name="q"
+            value="{{ request.args.get('q', '') }}">
+        <button class="btn btn-primary" type="submit">Search</button>
+        {% if request.args.get('q') %}
+        <a href="{{ url_for('companies') }}" class="btn btn-outline-secondary">Clear</a>
+        {% endif %}
+    </div>
+</form>
+
+<table class="table table-striped mt-3 align-middle">
+    <thead>
+        <tr>
+            <th>Company / Source</th>
+            <th>Type</th>
+            <th>Date Extracted</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for company in companies %}
+        <tr>
+            <td>
+                <strong>{{ company['company_name'] }}</strong>
+                <br>
+                <small class="text-muted text-truncate d-inline-block" style="max-width: 300px;">{{
+                    company['source_location'] }}</small>
+            </td>
+            <td>
+                {% if company['source_type'] == 'PDF' %}
+                <span class="badge bg-primary">PDF</span>
+                {% elif company['source_type'] == 'URL' %}
+                <span class="badge bg-success">Link</span>
+                {% else %}
+                <span class="badge bg-secondary">{{ company['source_type'] }}</span>
+                {% endif %}
+            </td>
+            <td>
+                <small>{{ company['extracted_at'] }}</small>
+            </td>
+            <td>
+                <a href="{{ url_for('company_detail', id=company['id']) }}" class="btn btn-sm btn-outline-info">View
+                    Details</a>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="4" class="text-center">No companies found. <a href="{{ url_for('index') }}">Upload
+                    something?</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
