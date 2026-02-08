@@ -2,13 +2,16 @@ import os
 import secrets
 import sqlite3
 import requests
-import fitz  # PyMuPDF
+import fitz  
 import google.generativeai as genai
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 from io import BytesIO
 import base64
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 # Generate a secret key if not set (fine for demo reset on deploy)
@@ -21,21 +24,17 @@ app.config['UPLOAD_FOLDER'] = os.path.join(TEMP_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload setup
 app.config['DB_PATH'] = os.path.join(TEMP_DIR, 'demo.db')
 
-# Gemini Setup
-# User provided key - prioritizing env var but falling back to hardcoded for demo
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyA7VUHQA0mNblXG10qEM9WGuf3k0LJVEdI')
+# Gemini Setup - HARDCODED FOR TESTING
+GEMINI_API_KEY = 'AIzaSyB8NuS1DcdGhk9OYQsgPWuysP_mJBjsP94'
 
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        # Use flash model for speed and cost
-        model = genai.GenerativeModel('gemini-1.5-flash')
-    except Exception as e:
-        print(f"Error configuring Gemini: {e}")
-        model = None
-else:
+try:
+    print(f"Configuring Gemini with key: {GEMINI_API_KEY[:5]}...")
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    print("Gemini model configured successfully!")
+except Exception as e:
+    print(f"Error configuring Gemini: {e}")
     model = None
-    print("Warning: GEMINI_API_KEY not found. AI features will be disabled.")
 
 # Ensure upload directory exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -70,9 +69,7 @@ def init_db():
     conn.close()
 
 def get_db_connection():
-    # Ensure DB exists before connecting (since /tmp can be wiped)
-    if not os.path.exists(app.config['DB_PATH']):
-        init_db()
+    init_db()  
     conn = sqlite3.connect(app.config['DB_PATH'])
     conn.row_factory = sqlite3.Row
     return conn
@@ -116,7 +113,6 @@ def extract_text_via_ocr(pdf_path):
         # Process first 5 pages for demo (free tier has limits)
         for page_num in range(min(5, len(doc))):
             page = doc[page_num]
-            
             # Render page to image (PNG format, 300 DPI for good OCR)
             pix = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
             img_bytes = pix.tobytes("png")
@@ -126,12 +122,13 @@ def extract_text_via_ocr(pdf_path):
             
             # Call OCR.space API
             payload = {
+                'apikey': 'K81894572788957', 
                 'base64Image': f"data:image/png;base64,{img_base64}",
                 'language': 'eng',
                 'isOverlayRequired': False,
                 'detectOrientation': True,
                 'scale': True,
-                'OCREngine': 2,  # Engine 2 is more accurate
+                'OCREngine': 2, # Engine 2 is more accurate
             }
             
             response = requests.post(url, data=payload, timeout=30)
@@ -140,7 +137,7 @@ def extract_text_via_ocr(pdf_path):
             if response.status_code != 200:
                 print(f"OCR.space API returned status {response.status_code}: {response.text}")
                 continue
-            
+                
             # Parse JSON response
             try:
                 result = response.json()
@@ -148,133 +145,67 @@ def extract_text_via_ocr(pdf_path):
                 print(f"Failed to parse OCR.space response as JSON: {json_error}")
                 print(f"Response text: {response.text[:200]}")
                 continue
-            
-            # Check if result is a dictionary
-            if not isinstance(result, dict):
-                print(f"OCR.space returned non-dict response: {type(result)}")
-                continue
-            
-            # Extract text from response
-            if result.get('ParsedResults'):
-                page_text = result['ParsedResults'][0].get('ParsedText', '')
-                if page_text.strip():
-                    full_text += page_text + "\n"
-            
-            # Check for API errors
+
             if result.get('IsErroredOnProcessing'):
-                error_msg = result.get('ErrorMessage', ['Unknown error'])
-                if isinstance(error_msg, list) and len(error_msg) > 0:
-                    error_msg = error_msg[0]
-                print(f"OCR.space error on page {page_num + 1}: {error_msg}")
-        
-        doc.close()
-        
-        if full_text.strip():
-            return full_text, None
-        else:
-            return None, "No text could be extracted from the scanned PDF"
+                print(f"OCR Error on page {page_num}: {result.get('ErrorMessage')}")
+                continue
+                
+            parsed_results = result.get('ParsedResults')
+            if parsed_results and isinstance(parsed_results, list):
+                page_text = parsed_results[0].get('ParsedText', '')
+                full_text += page_text + "\n"
+            else:
+                print(f"No parsed results for page {page_num}")
+                
+        if not full_text.strip():
+            return None, "OCR could not extract text (image quality too low?)"
             
+        return full_text, None
+
     except Exception as e:
-        print(f"OCR.space API failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return None, f"OCR Failed: {e}"
-
-def perform_deep_analysis(pdf_path):
-    """
-    Perform deep analysis of PDF content using Gemini
-    Note: Disabled visual analysis due to API compatibility issues
-    """
-    if not model:
-        return None
-    
-    try:
-        # Extract text first
-        text, error = extract_text_from_pdf(pdf_path)
-        if not text:
-            return None
-        
-        # Use Gemini for text-based deep analysis only
-        prompt = f"""
-Analyze this document and provide:
-1. Key topics and themes
-2. Important data points, numbers, or statistics mentioned
-3. Main insights or conclusions
-4. What questions does this document answer?
-
-Document content:
-{text[:10000]}
-
-Be specific and concise.
-"""
-        response = model.generate_content(prompt)
-        
-        if response.text:
-            return response.text
-        else:
-            return None
-            
-    except Exception as e:
-        print(f"Deep analysis failed: {e}")
-        return None
+        print(f"OCR Failed: {e}")
+        return None, f"OCR Failed: {str(e)}"
 
 def extract_text_from_pdf(pdf_path):
-    """
-    Extract text from PDF using PyMuPDF (fitz)
-    Falls back to OCR.space API for scanned PDFs
-    """
-    text = ""
     try:
-        # Open PDF with PyMuPDF
         doc = fitz.open(pdf_path)
+        text = ""
+        for page in doc:
+            text += page.get_text()
         
-        if len(doc) == 0:
-            return None, "Empty PDF file"
-        
-        # 1. Try Standard Text Extraction with PyMuPDF
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            page_text = page.get_text()
-            if page_text:
-                text += page_text + "\n"
-        
-        doc.close()
-        
-        # 2. Check if text is sufficient (OCR fallback for scanned PDFs)
-        if not text.strip() or len(text.strip()) < 100:
-            print("Text too sparse, attempting OCR.space API...")
-            ocr_text, ocr_error = extract_text_via_ocr(pdf_path)
+        # If very little text, assume it's scanned and try OCR
+        if len(text.strip()) < 50:
+            print("Text too short, attempting OCR fallback...")
+            ocr_text, error = extract_text_via_ocr(pdf_path)
             if ocr_text:
-                text = ocr_text
-            elif not text.strip():  # Only return error if we still have no text
-                error_msg = f"Scanned PDF detected. OCR failed: {ocr_error}" if ocr_error else "Scanned PDF detected. OCR yielded no text."
-                return None, error_msg
-
+                return ocr_text, None
+            # If OCR fails, return original tiny text (better than nothing) or error
+            if not text.strip():
+                return None, error or "Empty PDF and OCR failed"
+        
+        return text, None
     except Exception as e:
-        print(f"Error extracting PDF: {e}")
         return None, str(e)
-    
-    return text, None
 
 def extract_text_from_url(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Remove script and style elements
+        # Remove scripts and styles
         for script in soup(["script", "style"]):
             script.decompose()
             
         text = soup.get_text()
         
-        # Break into lines and remove leading and trailing space on each
+        # Break multi-headlines into a line each
         lines = (line.strip() for line in text.splitlines())
         # Break multi-headlines into a line each
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         # Drop blank lines
         text = '\n'.join(chunk for chunk in chunks if chunk)
+        
         return text
     except Exception as e:
         print(f"Error fetching URL: {e}")
@@ -287,6 +218,34 @@ def save_company(name, source_type, source_location, text, summary=None):
     conn.commit()
     conn.close()
 
+def perform_deep_analysis(filepath):
+    """
+    Uploads the file to Gemini and requests a detailed analysis
+    """
+    if not model:
+        return None
+
+    try:
+        # Upload the file to Gemini
+        print(f"Uploading file to Gemini: {filepath}")
+        uploaded_file = genai.upload_file(filepath)
+        
+        # Generate content with the file and prompt
+        prompt = """
+        Analyze this document thoroughly. Provide:
+        1. Key Financial Data (if any)
+        2. Main Risks or Challenges
+        3. Strategic Opportunities
+        4. A final conclusion on the document's outlook.
+        """
+        
+        response = model.generate_content([prompt, uploaded_file])
+        return response.text
+        
+    except Exception as e:
+        print(f"Deep analysis failed: {e}")
+        return None
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -298,6 +257,7 @@ def index():
             if file.filename == '':
                 flash('No selected file')
                 return redirect(request.url)
+            
             if file and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -315,6 +275,7 @@ def index():
                     
                     # Save to DB
                     save_company(company_name, 'PDF', filename, text, summary)
+                    
                     msg = f'Successfully processed {company_name}'
                     if not summary:
                         msg += ' (AI Summary unavailable - check API key)'
@@ -324,31 +285,32 @@ def index():
                     msg = f"Failed to process PDF: {error}" if error else "Could not extract text"
                     flash(msg, 'error')
                     return redirect(request.url)
-        
+
         # Check for URL submission
         url = request.form.get('url')
         if url:
             text = extract_text_from_url(url)
             if text:
-                 # Use custom name if provided, else use parse
-                 company_name = custom_name
-                 if not company_name:
-                     from urllib.parse import urlparse
-                     company_name = urlparse(url).netloc
-
-                 # Generate Summary
-                 summary = summarize_text(text)
-
-                 save_company(company_name, 'URL', url, text, summary)
-                 msg = f'Successfully processed {company_name}'
-                 if not summary:
-                     msg += ' (Summary unavailable)'
-                 flash(msg, 'success')
-                 return redirect(url_for('companies'))
+                # Use custom name if provided, else use parse
+                company_name = custom_name
+                if not company_name:
+                    from urllib.parse import urlparse
+                    company_name = urlparse(url).netloc
+                
+                # Generate Summary
+                summary = summarize_text(text)
+                
+                save_company(company_name, 'URL', url, text, summary)
+                
+                msg = f'Successfully processed {company_name}'
+                if not summary:
+                    msg += ' (Summary unavailable)'
+                flash(msg, 'success')
+                return redirect(url_for('companies'))
             else:
                 flash(f'Could not fetch content from {url}', 'error')
                 return redirect(request.url)
-            
+
     return render_template('index.html')
 
 @app.route('/companies')
@@ -382,12 +344,12 @@ def deep_analyze(id):
     if company is None:
         flash('Company not found', 'error')
         return redirect(url_for('companies'))
-    
+
     # If already has deep analysis, return it
     if company['deep_analysis']:
         flash('Analysis already exists!', 'info')
         return redirect(url_for('company_detail', id=id))
-    
+
     # Perform deep analysis for PDFs only
     if company['source_type'] == 'PDF':
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], company['source_location'])
@@ -408,7 +370,7 @@ def deep_analyze(id):
             flash('PDF file not found. File may have been deleted.', 'error')
     else:
         flash('Deep analysis is only available for PDFs', 'warning')
-    
+
     return redirect(url_for('company_detail', id=id))
 
 # Required for Vercel

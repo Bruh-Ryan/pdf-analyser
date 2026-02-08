@@ -12,6 +12,7 @@
             <div class="mb-3">
                 <label for="file" class="form-label">Select PDF File</label>
                 <input class="form-control" type="file" id="file" name="file" accept=".pdf" required>
+                <div class="form-text text-danger">Warning: File Size Limit 1 MB (larger files may fail OCR)</div>
             </div>
             <input type="hidden" name="custom_name" id="pdf_custom_name">
             <button type="button" class="btn btn-primary" onclick="handlePdfSubmit()">Upload PDF</button>

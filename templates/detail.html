@@ -12,18 +12,9 @@
 
         {% if company['summary'] %}
         <div class="mb-4">
-            <h5>AI Summary ✨</h5>
+            <h5>Initial Summary ✨</h5>
             <div class="p-3 bg-light border border-info rounded">
                 {{ company['summary'] }}
-            </div>
-        </div>
-        {% endif %}
-
-        {% if company['deep_analysis'] %}
-        <div class="mb-4">
-            <h5>Deep Analysis 🔍</h5>
-            <div class="p-3 bg-light border border-success rounded" style="white-space: pre-wrap;">
-                {{ company['deep_analysis'] }}
             </div>
         </div>
         {% endif %}
@@ -32,14 +23,39 @@
         <div class="p-3 bg-light border rounded" style="white-space: pre-wrap; max-height: 600px; overflow-y: auto;">
             {{ company['raw_text'] }}
         </div>
+
         <div class="mt-3 d-flex gap-2">
             <a href="{{ url_for('companies') }}" class="btn btn-secondary">Back to List</a>
-            {% if company['source_type'] == 'PDF' and not company['deep_analysis'] %}
+
+            {% if company['source_type'] == 'PDF' %}
             <form method="POST" action="{{ url_for('deep_analyze', id=company['id']) }}" class="d-inline">
-                <button type="submit" class="btn btn-success">🔍 Deep Analysis (Graphs/Tables)</button>
+                <button type="submit" class="btn btn-success">
+                    {% if company['deep_analysis'] %}Regenerate Summary{% else %}Summarise{% endif %}
+                </button>
             </form>
             {% endif %}
         </div>
+
+        {% if company['deep_analysis'] %}
+        <hr class="my-4">
+        <!-- Changed from alert-dismissible to a permanent card so it won't disappear -->
+        <div id="analysisResult" class="mb-4 card border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">✨ Smart Summary & Analysis</h5>
+            </div>
+            <div class="card-body">
+                <div style="white-space: pre-wrap;">{{ company['deep_analysis'] }}</div>
+            </div>
+        </div>
+        <script>
+            document.addEventListener("DOMContentLoaded", function () {
+                const element = document.getElementById("analysisResult");
+                if (element) {
+                    element.scrollIntoView({ behavior: "smooth", block: "center" });
+                }
+            });
+        </script>
+        {% endif %}
     </div>
 </div>
 {% endblock %}
