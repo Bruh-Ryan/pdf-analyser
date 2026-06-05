@@ -39,7 +39,7 @@ A minimal Flask application to extract, store, and retrieve text from PDFs and U
     ```bash
     python3 app.py
     ```
-    The app will be available at [http://127.0.0.1:5000](http://127.0.0.1:5000).
+   
 
 ## Usage Flow
 1.  Go to Homepage.
